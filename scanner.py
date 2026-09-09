@@ -16,6 +16,7 @@ class Scanner:
         self.db = db
         self.queue_manager = queue_manager
         self.is_running = True
+        logger.info(f"Scanner initialized with {len(clients)} client(s)")
     
     def find_client_for_channel(self, chat_id: int) -> Optional[Client]:
         """Find a client that can access the channel"""
@@ -32,7 +33,8 @@ class Scanner:
         try:
             await client.get_chat(chat_id)
             return True
-        except:
+        except Exception as e:
+            logger.debug(f"Client cannot access channel {chat_id}: {e}")
             return False
     
     async def scan_history(self):
@@ -40,14 +42,19 @@ class Scanner:
         logger.info("🔄 Starting history scan...")
         
         for source_str, dest_str in zip(Config.SOURCE_CHANNELS, Config.DESTINATION_CHANNELS):
-            source_chat_id = int(source_str.strip())
-            destination_chat_id = int(dest_str.strip())
+            try:
+                source_chat_id = int(source_str.strip())
+                destination_chat_id = int(dest_str.strip())
+            except ValueError as e:
+                logger.error(f"❌ Invalid channel ID: {source_str} or {dest_str}")
+                continue
             
             # Find accessible client
             scanner_client = None
             for client in self.clients:
                 if await self.verify_channel_access(client, source_chat_id):
                     scanner_client = client
+                    logger.info(f"✅ Using client for source: {source_chat_id}")
                     break
             
             if not scanner_client:
@@ -63,6 +70,8 @@ class Scanner:
             batch_size = Config.BATCH_SIZE
             current_offset = last_message_id
             total_queued = 0
+            empty_batches = 0
+            max_empty_batches = 3  # Stop after 3 empty batches
             
             while self.is_running:
                 try:
@@ -74,8 +83,18 @@ class Scanner:
                     )
                     
                     if not messages:
-                        logger.info(f"✅ History scan complete for channel {source_chat_id}")
-                        break
+                        empty_batches += 1
+                        logger.info(f"Empty batch for channel {source_chat_id} (empty count: {empty_batches})")
+                        
+                        if empty_batches >= max_empty_batches:
+                            logger.info(f"✅ History scan complete for channel {source_chat_id}")
+                            break
+                        
+                        await asyncio.sleep(5)
+                        continue
+                    
+                    # Reset empty batch counter
+                    empty_batches = 0
                     
                     queued_count = 0
                     for message in messages:
@@ -87,10 +106,11 @@ class Scanner:
                                     'source_chat_id': source_chat_id,
                                     'source_message_id': message.id,
                                     'destination_chat_id': destination_chat_id,
-                                    'has_media': True
+                                    'has_media': True,
+                                    'media_type': self._get_media_type(message)
                                 }
                                 
-                                # Add to queue
+                                # Add to database and queue
                                 self.db.add_file_record(
                                     source_chat_id,
                                     message.id,
@@ -115,7 +135,7 @@ class Scanner:
                     await asyncio.sleep(2)
                     
                 except Exception as e:
-                    logger.error(f"❌ Scan error: {e}")
+                    logger.error(f"❌ Scan error for channel {source_chat_id}: {e}")
                     await asyncio.sleep(5)
             
             logger.info(f"✅ Total queued from {source_chat_id}: {total_queued} files")
@@ -123,20 +143,36 @@ class Scanner:
     def _has_supported_media(self, message) -> bool:
         """Check if message has supported media"""
         return (
-            message.video or 
-            message.document or 
-            message.audio or 
-            message.photo or 
-            message.voice or 
-            message.video_note
+            message.video is not None or 
+            message.document is not None or 
+            message.audio is not None or 
+            message.photo is not None or 
+            message.voice is not None or 
+            message.video_note is not None
         )
+    
+    def _get_media_type(self, message) -> str:
+        """Get media type from message"""
+        if message.video:
+            return 'video'
+        elif message.document:
+            return 'document'
+        elif message.audio:
+            return 'audio'
+        elif message.photo:
+            return 'photo'
+        elif message.voice:
+            return 'voice'
+        elif message.video_note:
+            return 'video_note'
+        return 'unknown'
     
     async def listen_new_messages(self):
         """Listen for new messages in source channels"""
         logger.info("👂 Starting new message listeners...")
         
         # Create message handlers for each client
-        for client in self.clients:
+        for idx, client in enumerate(self.clients, 1):
             @client.on_message()
             async def handle_new_message(client, message):
                 if not self.is_running:
@@ -156,4 +192,33 @@ class Scanner:
                     # Check for supported media
                     if self._has_supported_media(message):
                         # Check for duplicates
-                        if not self.db
+                        if not self.db.is_duplicate(source_chat_id, message.id):
+                            file_info = {
+                                'source_chat_id': source_chat_id,
+                                'source_message_id': message.id,
+                                'destination_chat_id': destination_chat_id,
+                                'has_media': True,
+                                'media_type': self._get_media_type(message)
+                            }
+                            
+                            # Add to database and queue
+                            self.db.add_file_record(
+                                int(source_chat_id),
+                                message.id,
+                                int(destination_chat_id)
+                            )
+                            await self.queue_manager.add_file(file_info)
+                            
+                            logger.info(f"🆕 New message queued from {source_chat_id}: {message.id}")
+                
+                except Exception as e:
+                    logger.error(f"❌ New message handler error: {e}")
+        
+        # Keep the listener running
+        while self.is_running:
+            await asyncio.sleep(1)
+    
+    def stop(self):
+        """Stop scanner"""
+        self.is_running = False
+        logger.info("Scanner stopped")
