@@ -3,6 +3,7 @@ import certifi
 from pymongo import MongoClient
 from datetime import datetime
 import logging
+from config import Config  # ✅ यह import add करें
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +19,7 @@ class Database:
     def connect(self):
         try:
             self.client = MongoClient(
-                Config.MONGO_URI if hasattr(Config, 'MONGO_URI') else 'mongodb://localhost:27017',
+                Config.MONGO_URI,
                 tls=True,
                 tlsAllowInvalidCertificates=True,
                 tlsAllowInvalidHostnames=True,
@@ -32,7 +33,6 @@ class Database:
             
             self.client.admin.command('ping')
             
-            from config import Config
             self.db = self.client[Config.DB_NAME]
             self.files = self.db['files']
             self.queue = self.db['queue']
