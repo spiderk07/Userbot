@@ -2,11 +2,16 @@ FROM python:3.10-slim
 
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies and SSL certificates
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
+    ca-certificates \
+    openssl \
     && rm -rf /var/lib/apt/lists/*
+
+# Update CA certificates
+RUN update-ca-certificates
 
 # Copy requirements
 COPY requirements.txt .
