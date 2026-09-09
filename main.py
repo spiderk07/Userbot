@@ -35,7 +35,9 @@ def home():
     return jsonify({
         'status': 'running',
         'service': 'Telegram Copier',
-        'version': '1.0.0'
+        'version': '1.0.0',
+        'sessions': len(Config.get_sessions()),
+        'workers': len(Config.get_sessions()) + (1 if Config.BOT_TOKEN else 0)
     })
 
 @app.route('/health')
@@ -46,6 +48,7 @@ def health():
         'stats': stats,
         'queue_size': queue_manager.qsize(),
         'processing': queue_manager.processing_count(),
+        'sessions': len(Config.get_sessions()),
         'timestamp': datetime.now().isoformat()
     })
 
@@ -62,15 +65,44 @@ class TelegramCopier:
         self.is_running = True
         self.tasks = []
     
+    def display_config(self):
+        """Display current configuration"""
+        logger.info("="*60)
+        logger.info("📋 CURRENT CONFIGURATION")
+        logger.info("="*60)
+        logger.info(f"🔑 API ID: {Config.API_ID}")
+        logger.info(f"🤖 Bot Token: {'✅ Set' if Config.BOT_TOKEN else '❌ Not set'}")
+        
+        sessions = Config.get_sessions()
+        logger.info(f"👥 Available Sessions: {len(sessions)}")
+        for i, session in enumerate(sessions, 1):
+            # Show only first 10 chars for security
+            session_preview = session[:10] + "..." if len(session) > 10 else "***"
+            logger.info(f"   Session {i}: {session_preview}")
+        
+        logger.info(f"📥 Source Channels: {len(Config.SOURCE_CHANNELS)}")
+        for ch in Config.SOURCE_CHANNELS:
+            logger.info(f"   - {ch}")
+        
+        logger.info(f"📤 Destination Channels: {len(Config.DESTINATION_CHANNELS)}")
+        for ch in Config.DESTINATION_CHANNELS:
+            logger.info(f"   - {ch}")
+        
+        logger.info(f"🗄️ Database: {Config.DB_NAME}")
+        logger.info(f"⚙️ Batch Size: {Config.BATCH_SIZE}")
+        logger.info(f"📝 Copy Mode: {Config.COPY_MODE}")
+        logger.info("="*60)
+    
     async def initialize_clients(self):
         """Initialize all client instances"""
-        logger.info("Initializing clients...")
+        logger.info("\n🔧 Initializing clients...")
         
         # Start bot for monitoring
         await self.bot_handler.start()
         
         # Create userbot clients for scanning
-        for i, session in enumerate(Config.get_sessions(), 1):
+        sessions = Config.get_sessions()
+        for i, session in enumerate(sessions, 1):
             try:
                 from pyrogram import Client
                 client = Client(
@@ -92,13 +124,54 @@ class TelegramCopier:
             logger.error("❌ No scanner clients available!")
             return False
         
+        logger.info(f"✅ Total scanner clients: {len(self.clients)}")
+        
         # Initialize scanner
         self.scanner = Scanner(self.clients, self.db, self.queue_manager)
         return True
     
+    async def verify_access(self):
+        """Verify access to all channels"""
+        logger.info("\n📋 Verifying channel access...")
+        
+        for source_str, dest_str in zip(Config.SOURCE_CHANNELS, Config.DESTINATION_CHANNELS):
+            source_chat_id = int(source_str.strip())
+            destination_chat_id = int(dest_str.strip())
+            
+            # Check source access
+            source_accessible = False
+            for client in self.clients:
+                try:
+                    chat = await client.get_chat(source_chat_id)
+                    logger.info(f"✅ Source '{chat.title}' accessible")
+                    source_accessible = True
+                    break
+                except:
+                    continue
+            
+            if not source_accessible:
+                logger.warning(f"⚠️ No userbot can access source: {source_chat_id}")
+            
+            # Check destination access
+            dest_accessible = False
+            for client in self.clients:
+                try:
+                    chat = await client.get_chat(destination_chat_id)
+                    logger.info(f"✅ Destination '{chat.title}' accessible")
+                    dest_accessible = True
+                    break
+                except:
+                    continue
+            
+            if not dest_accessible:
+                logger.warning(f"⚠️ No userbot can access destination: {destination_chat_id}")
+    
     async def start(self):
         """Start the application"""
-        logger.info("🚀 Starting Telegram Channel Copier...")
+        logger.info("\n🚀 Starting Telegram Channel Copier...")
+        
+        # Display configuration
+        self.display_config()
         
         # Validate configuration
         errors = Config.validate()
@@ -134,11 +207,9 @@ class TelegramCopier:
                     lambda s=sig: asyncio.create_task(self.graceful_shutdown(s))
                 )
             except NotImplementedError:
-                # Windows doesn't support add_signal_handler
                 pass
         
         try:
-            # Wait for tasks
             await asyncio.gather(*self.tasks)
         except asyncio.CancelledError:
             pass
@@ -149,46 +220,10 @@ class TelegramCopier:
         
         return True
     
-    async def verify_access(self):
-        """Verify access to all channels"""
-        logger.info("\n📋 Verifying channel access...")
-        
-        for source_str, dest_str in zip(Config.SOURCE_CHANNELS, Config.DESTINATION_CHANNELS):
-            source_chat_id = int(source_str.strip())
-            destination_chat_id = int(dest_str.strip())
-            
-            # Check source access
-            source_accessible = False
-            for client in self.clients:
-                try:
-                    chat = await client.get_chat(source_chat_id)
-                    logger.info(f"✅ Source accessible: {chat.title}")
-                    source_accessible = True
-                    break
-                except:
-                    continue
-            
-            if not source_accessible:
-                logger.warning(f"⚠️ No userbot can access source: {source_chat_id}")
-            
-            # Check destination access
-            dest_accessible = False
-            for client in self.clients:
-                try:
-                    chat = await client.get_chat(destination_chat_id)
-                    logger.info(f"✅ Destination accessible: {chat.title}")
-                    dest_accessible = True
-                    break
-                except:
-                    continue
-            
-            if not dest_accessible:
-                logger.warning(f"⚠️ No userbot can access destination: {destination_chat_id}")
-    
     async def show_stats(self):
         """Show periodic statistics"""
         while self.is_running:
-            await asyncio.sleep(300)  # Every 5 minutes
+            await asyncio.sleep(300)
             stats = self.db.get_stats()
             logger.info("\n" + "="*50)
             logger.info("📊 PROCESSING STATS")
@@ -199,6 +234,7 @@ class TelegramCopier:
             logger.info(f"🔄 Processing: {stats['processing']}")
             logger.info(f"❌ Failed: {stats['failed']}")
             logger.info(f"📦 Queue Size: {self.queue_manager.qsize()}")
+            logger.info(f"👥 Active Sessions: {len(self.clients)}")
             logger.info("="*50 + "\n")
     
     async def graceful_shutdown(self, signal=None):
@@ -209,24 +245,18 @@ class TelegramCopier:
         logger.info("\n🛑 Shutting down gracefully...")
         self.is_running = False
         
-        # Stop scanner
         if self.scanner:
             self.scanner.stop()
         
-        # Stop workers
         await self.worker_pool.stop_all()
-        
-        # Stop bot
         await self.bot_handler.stop()
         
-        # Stop scanner clients
         for client in self.clients:
             try:
                 await client.stop()
             except:
                 pass
         
-        # Save final stats
         stats = self.db.get_stats()
         logger.info("\n📊 Final Stats:")
         logger.info(f"Total Files: {stats['total']}")
@@ -234,9 +264,7 @@ class TelegramCopier:
         logger.info(f"Pending: {stats['pending']}")
         logger.info(f"Failed: {stats['failed']}")
         
-        # Close database
         self.db.close()
-        
         logger.info("✅ Shutdown complete")
         sys.exit(0)
 
@@ -247,11 +275,9 @@ def run_flask():
 
 def main():
     """Main entry point"""
-    # Run Flask in background thread
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
     
-    # Run Telegram Copier
     copier = TelegramCopier()
     
     try:
