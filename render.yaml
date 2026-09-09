@@ -1,0 +1,36 @@
+services:
+  - type: worker
+    name: telegram-copier
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    healthCheckPath: /health
+    envVars:
+      - key: API_ID
+        sync: false
+      - key: API_HASH
+        sync: false
+      - key: BOT_TOKEN
+        sync: false
+      - key: SESSION_1
+        sync: false
+      - key: SESSION_2
+        sync: false
+      - key: SESSION_3
+        sync: false
+      - key: SOURCE_CHANNELS
+        sync: false
+      - key: DESTINATION_CHANNELS
+        sync: false
+      - key: MONGO_URI
+        sync: false
+      - key: DB_NAME
+        sync: false
+      - key: BATCH_SIZE
+        sync: false
+      - key: COPY_MODE
+        sync: false
+      - key: RETRY_LIMIT
+        sync: false
+      - key: ADMIN_USER_IDS
+        sync: false
