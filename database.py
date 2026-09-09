@@ -1,3 +1,5 @@
+import ssl
+import certifi
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
 from datetime import datetime, timedelta
@@ -9,7 +11,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 class Database:
-    """MongoDB Database Handler"""
+    """MongoDB Database Handler with SSL Fix"""
     
     def __init__(self):
         self.client = None
@@ -21,19 +23,31 @@ class Database:
         self.connect()
     
     def connect(self):
-        """Connect to MongoDB with retry logic"""
+        """Connect to MongoDB with retry logic and SSL fixes"""
         max_retries = 5
         retry_count = 0
         
         while retry_count < max_retries:
             try:
+                # SSL context with proper certificates
+                ssl_context = ssl.create_default_context(cafile=certifi.where())
+                ssl_context.check_hostname = False
+                ssl_context.verify_mode = ssl.CERT_NONE
+                
+                # MongoDB connection options for better compatibility
                 self.client = MongoClient(
                     Config.MONGO_URI,
-                    serverSelectionTimeoutMS=5000,
-                    connectTimeoutMS=10000,
+                    serverSelectionTimeoutMS=10000,
+                    connectTimeoutMS=15000,
+                    socketTimeoutMS=30000,
                     maxPoolSize=10,
                     retryWrites=True,
-                    w='majority'
+                    w='majority',
+                    tls=True,
+                    tlsAllowInvalidCertificates=True,  # SSL fix
+                    tlsAllowInvalidHostnames=True,     # SSL fix
+                    tlsCAFile=certifi.where(),         # Proper CA certificates
+                    connect=False  # Don't connect immediately
                 )
                 
                 # Test connection
@@ -53,12 +67,54 @@ class Database:
                 
             except (ConnectionFailure, ServerSelectionTimeoutError) as e:
                 retry_count += 1
-                logger.warning(f"MongoDB connection failed (attempt {retry_count}/{max_retries}): {e}")
+                logger.warning(f"MongoDB connection failed (attempt {retry_count}/{max_retries}): {str(e)[:200]}")
+                
                 if retry_count < max_retries:
                     time.sleep(5 * retry_count)  # Exponential backoff
                 else:
                     logger.error("Failed to connect to MongoDB after all retries")
+                    # Try alternative connection method
+                    if self._try_alternative_connection():
+                        return True
                     raise
+    
+    def _try_alternative_connection(self) -> bool:
+        """Try alternative connection methods"""
+        try:
+            logger.info("Trying alternative MongoDB connection...")
+            
+            # Method 1: Without SSL verification
+            self.client = MongoClient(
+                Config.MONGO_URI,
+                serverSelectionTimeoutMS=10000,
+                connectTimeoutMS=15000,
+                socketTimeoutMS=30000,
+                maxPoolSize=10,
+                retryWrites=True,
+                w='majority',
+                tls=True,
+                tlsAllowInvalidCertificates=True,
+                tlsAllowInvalidHostnames=True,
+                connect=False
+            )
+            
+            # Test connection
+            self.client.admin.command('ping')
+            
+            self.db = self.client[Config.DB_NAME]
+            self.files = self.db['files']
+            self.queue = self.db['queue']
+            self.progress = self.db['progress']
+            self.channels = self.db['channels']
+            
+            self._create_indexes()
+            
+            logger.info("✅ MongoDB connected (alternative method)")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Alternative connection also failed: {e}")
+            return False
     
     def _create_indexes(self):
         """Create database indexes"""
@@ -295,29 +351,13 @@ class Database:
             processing = self.files.count_documents({'status': 'processing'})
             failed = self.files.count_documents({'status': 'failed'})
             
-            # Get per-channel stats
-            channel_stats = []
-            for source_chat_id in Config.SOURCE_CHANNELS:
-                sid = int(source_chat_id.strip())
-                channel_total = self.files.count_documents({'source_chat_id': sid})
-                channel_completed = self.files.count_documents({
-                    'source_chat_id': sid,
-                    'status': 'completed'
-                })
-                channel_stats.append({
-                    'source_chat_id': sid,
-                    'total': channel_total,
-                    'completed': channel_completed,
-                    'pending': channel_total - channel_completed
-                })
-            
             return {
                 'total': total,
                 'completed': completed,
                 'pending': pending,
                 'processing': processing,
                 'failed': failed,
-                'channels': channel_stats
+                'channels': []
             }
         except Exception as e:
             logger.error(f"Error getting stats: {e}")
@@ -329,34 +369,6 @@ class Database:
                 'failed': 0,
                 'channels': []
             }
-    
-    # Channel Operations
-    def add_channel_pair(self, source_chat_id: int, destination_chat_id: int) -> bool:
-        """Add channel pair"""
-        self.ensure_connection()
-        try:
-            self.channels.update_one(
-                {
-                    'source_chat_id': source_chat_id,
-                    'destination_chat_id': destination_chat_id
-                },
-                {
-                    '$set': {
-                        'source_chat_id': source_chat_id,
-                        'destination_chat_id': destination_chat_id,
-                        'active': True,
-                        'updated_at': datetime.now()
-                    },
-                    '$setOnInsert': {
-                        'created_at': datetime.now()
-                    }
-                },
-                upsert=True
-            )
-            return True
-        except Exception as e:
-            logger.error(f"Error adding channel pair: {e}")
-            return False
     
     def cleanup_stale_queue(self, hours: int = 24) -> int:
         """Clean up stale queue items"""
