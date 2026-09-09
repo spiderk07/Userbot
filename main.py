@@ -27,30 +27,44 @@ logger = logging.getLogger(__name__)
 
 # Flask app for health checks
 app = Flask(__name__)
-db = Database()
-queue_manager = QueueManager()
+
+# Initialize database and queue manager
+try:
+    db = Database()
+    queue_manager = QueueManager()
+except Exception as e:
+    logger.error(f"Failed to initialize database: {e}")
+    db = None
+    queue_manager = None
 
 @app.route('/')
 def home():
+    sessions_count = len(Config.get_sessions())
     return jsonify({
         'status': 'running',
         'service': 'Telegram Copier',
         'version': '1.0.0',
-        'sessions': len(Config.get_sessions()),
-        'workers': len(Config.get_sessions()) + (1 if Config.BOT_TOKEN else 0)
+        'sessions': sessions_count,
+        'workers': sessions_count + (1 if Config.BOT_TOKEN else 0)
     })
 
 @app.route('/health')
 def health():
-    stats = db.get_stats()
-    return jsonify({
-        'status': 'healthy',
-        'stats': stats,
-        'queue_size': queue_manager.qsize(),
-        'processing': queue_manager.processing_count(),
-        'sessions': len(Config.get_sessions()),
-        'timestamp': datetime.now().isoformat()
-    })
+    if db is None:
+        return jsonify({'status': 'error', 'message': 'Database not initialized'}), 500
+    
+    try:
+        stats = db.get_stats()
+        return jsonify({
+            'status': 'healthy',
+            'stats': stats,
+            'queue_size': queue_manager.qsize(),
+            'processing': queue_manager.processing_count(),
+            'sessions': len(Config.get_sessions()),
+            'timestamp': datetime.now().isoformat()
+        })
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
 class TelegramCopier:
     """Main Application Class"""
@@ -76,7 +90,6 @@ class TelegramCopier:
         sessions = Config.get_sessions()
         logger.info(f"👥 Available Sessions: {len(sessions)}")
         for i, session in enumerate(sessions, 1):
-            # Show only first 10 chars for security
             session_preview = session[:10] + "..." if len(session) > 10 else "***"
             logger.info(f"   Session {i}: {session_preview}")
         
@@ -135,8 +148,12 @@ class TelegramCopier:
         logger.info("\n📋 Verifying channel access...")
         
         for source_str, dest_str in zip(Config.SOURCE_CHANNELS, Config.DESTINATION_CHANNELS):
-            source_chat_id = int(source_str.strip())
-            destination_chat_id = int(dest_str.strip())
+            try:
+                source_chat_id = int(source_str.strip())
+                destination_chat_id = int(dest_str.strip())
+            except ValueError:
+                logger.error(f"❌ Invalid channel ID: {source_str} or {dest_str}")
+                continue
             
             # Check source access
             source_accessible = False
@@ -275,9 +292,11 @@ def run_flask():
 
 def main():
     """Main entry point"""
+    # Run Flask in background thread
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
     
+    # Run Telegram Copier
     copier = TelegramCopier()
     
     try:
