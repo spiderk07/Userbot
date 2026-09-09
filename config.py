@@ -1,6 +1,6 @@
 import os
 from dotenv import load_dotenv
-from typing import List
+from typing import List, Optional
 
 load_dotenv()
 
@@ -14,16 +14,20 @@ class Config:
     # Bot Token (Optional - for monitoring and control)
     BOT_TOKEN = os.getenv('BOT_TOKEN', '')
     
-    # Session Strings for 3 Userbot accounts
+    # Session Strings (Flexible - 1 to 3 sessions)
     SESSION_1 = os.getenv('SESSION_1', '')
     SESSION_2 = os.getenv('SESSION_2', '')
     SESSION_3 = os.getenv('SESSION_3', '')
+    SESSION_4 = os.getenv('SESSION_4', '')  # Optional 4th session
+    SESSION_5 = os.getenv('SESSION_5', '')  # Optional 5th session
     
-    # Get all sessions as list
+    # Get all available sessions as list
     @staticmethod
     def get_sessions() -> List[str]:
+        """Get all non-empty session strings"""
         sessions = []
-        for session in [Config.SESSION_1, Config.SESSION_2, Config.SESSION_3]:
+        for i in range(1, 6):  # Support up to 5 sessions
+            session = getattr(Config, f'SESSION_{i}', '')
             if session and session.strip():
                 sessions.append(session.strip())
         return sessions
@@ -40,11 +44,9 @@ class Config:
     BATCH_SIZE = int(os.getenv('BATCH_SIZE', '50'))
     COPY_MODE = os.getenv('COPY_MODE', 'copy')  # 'copy' or 'forward'
     RETRY_LIMIT = int(os.getenv('RETRY_LIMIT', '3'))
-    MAX_CONCURRENT_TASKS = int(os.getenv('MAX_CONCURRENT_TASKS', '5'))
     
     # Bot Settings
     USE_BOT_FOR_MONITORING = os.getenv('USE_BOT_FOR_MONITORING', 'true').lower() == 'true'
-    USE_BOT_FOR_POSTING = os.getenv('USE_BOT_FOR_POSTING', 'false').lower() == 'true'
     
     # Admin Settings (Bot commands ke liye)
     ADMIN_USER_IDS = [int(x.strip()) for x in os.getenv('ADMIN_USER_IDS', '').split(',') if x.strip()]
@@ -67,8 +69,13 @@ class Config:
             errors.append("API_ID is required")
         if not Config.API_HASH:
             errors.append("API_HASH is required")
-        if not Config.get_sessions():
+        
+        sessions = Config.get_sessions()
+        if not sessions:
             errors.append("At least one session string is required")
+        else:
+            print(f"✅ Found {len(sessions)} session(s)")
+        
         if not Config.SOURCE_CHANNELS:
             errors.append("SOURCE_CHANNELS is required")
         if not Config.DESTINATION_CHANNELS:
