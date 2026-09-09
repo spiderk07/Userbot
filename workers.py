@@ -25,7 +25,7 @@ class Worker:
         self.error_count = 0
         self.max_errors = 10
         self.last_error_time = datetime.now()
-        self.backoff_time = 60  # seconds
+        self.backoff_time = 60
         self.worker_type = "Bot" if is_bot else "Userbot"
         self.processed_count = 0
         self.failed_count = 0
@@ -99,7 +99,6 @@ class Worker:
                 file_info = await self.queue_manager.get_file()
                 
                 if file_info is None:
-                    # No files to process, wait a bit
                     await asyncio.sleep(random.uniform(5, 10))
                     continue
                 
@@ -117,7 +116,7 @@ class Worker:
                     file_info['account'] = f"{self.worker_type}_{self.worker_id}"
                     await self.queue_manager.mark_completed(file_info)
                     self.processed_count += 1
-                    self.error_count = 0  # Reset error count on success
+                    self.error_count = 0
                     logger.info(f"✅ {self.worker_type} Worker {self.worker_id}: Copied message {file_info['source_message_id']}")
                 else:
                     await self.queue_manager.mark_failed(file_info, "Copy failed")
@@ -142,14 +141,14 @@ class Worker:
             await self.process_queue()
 
 class WorkerPool:
-    """Worker Pool Manager"""
+    """Worker Pool Manager - Auto-detects available sessions"""
     
     def __init__(self):
         self.workers = []
-        self.sessions = Config.get_sessions()
+        self.sessions = Config.get_sessions()  # Auto-detect available sessions
     
     async def start_all(self):
-        """Start all workers"""
+        """Start all workers (Bot + available userbots)"""
         worker_id = 0
         
         # Bot worker (if token available)
@@ -166,21 +165,22 @@ class WorkerPool:
             await asyncio.sleep(2)
             logger.info(f"🤖 Bot worker added as Worker {worker_id}")
         
-        # Userbot workers
+        # Userbot workers - only for available sessions
         for session in self.sessions:
-            if session:
-                worker_id += 1
-                userbot_worker = Worker(
-                    session_string=session,
-                    worker_id=worker_id,
-                    is_bot=False
-                )
-                self.workers.append(userbot_worker)
-                asyncio.create_task(userbot_worker.run())
-                await asyncio.sleep(2)
-                logger.info(f"👤 Userbot worker added as Worker {worker_id}")
+            worker_id += 1
+            userbot_worker = Worker(
+                session_string=session,
+                worker_id=worker_id,
+                is_bot=False
+            )
+            self.workers.append(userbot_worker)
+            asyncio.create_task(userbot_worker.run())
+            await asyncio.sleep(2)
+            logger.info(f"👤 Userbot worker added as Worker {worker_id}")
         
         logger.info(f"✅ Total workers started: {len(self.workers)}")
+        logger.info(f"   - Bot workers: {1 if Config.BOT_TOKEN else 0}")
+        logger.info(f"   - Userbot workers: {len(self.sessions)}")
     
     async def stop_all(self):
         """Stop all workers"""
