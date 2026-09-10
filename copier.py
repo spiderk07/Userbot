@@ -17,10 +17,7 @@ LINK_URL = "https://t.me/+0iMDc7jCLThkNmRl"
 
 
 def clean_caption(text):
-    """@mentions hata deta hai (jaise @allhty4ku, @skilldev) aur unhe hatane
-    se bache extra blank lines/spaces ko bhi saaf karta hai. Original
-    formatting (bold/italic waghera) preserve nahi hoti kyunki hum plain
-    text caption bhejte hain — agar wo bhi chahiye ho to bataana."""
+    """@mentions hata deta hai aur extra blank lines/spaces saaf karta hai."""
     if not text:
         return text
     cleaned = MENTION_PATTERN.sub('', text)
@@ -31,9 +28,7 @@ def clean_caption(text):
 
 
 def get_filename(message):
-    """Media message se uska asli filename nikalta hai (document/video/audio/
-    animation). Photo jaise media types me koi filename hota hi nahi, to
-    None return hota hai."""
+    """Media message se uska asli filename nikalta hai."""
     for attr in ('document', 'video', 'audio', 'animation', 'voice', 'video_note'):
         media = getattr(message, attr, None)
         if media is not None and getattr(media, 'file_name', None):
@@ -42,23 +37,13 @@ def get_filename(message):
 
 
 def build_caption(message):
-    """Caption banata hai jisme filename ek clickable hyperlink hota hai
-    (tap karne par LINK_URL khulta hai), aur uske neeche original caption
-    (mentions clean karke) agar ho to add ho jaata hai. Filename khud NAHI
-    badalta — Telegram par attach hui file ka असली file_name copy_message
-    ke through automatically preserve rehta hai, ye sirf visible caption
-    text hai."""
+    """Sabse upar 'Uploaded by : @sk4film', uske neeche filename ka
+    clickable hyperlink. Baaki poora caption (QUALITY, RELEASE, etc.) hata diya jata hai."""
     filename = get_filename(message)
-    cleaned_caption = clean_caption(message.caption)
-
     if filename:
         hyperlinked_name = f'<a href="{LINK_URL}">{html.escape(filename)}</a>'
-        if cleaned_caption:
-            return f"{hyperlinked_name}\n\n{html.escape(cleaned_caption)}"
-        return hyperlinked_name
-
-    # Filename na ho (jaise plain photo) to purana behaviour: sirf cleaned caption
-    return html.escape(cleaned_caption) if cleaned_caption else ""
+        return f"Uploaded by : @sk4film\n\n{hyperlinked_name}"
+    return ""
 
 
 class Copier:
@@ -66,7 +51,7 @@ class Copier:
         self.copy_mode = Config.COPY_MODE
         self.retry_limit = Config.RETRY_LIMIT
         self.db = Database()  # singleton — Database() har jagah same instance deta hai
-    
+
     async def copy_message(self, client, file_info):
         source_chat_id = int(file_info['source_chat_id'])
         source_message_id = int(file_info['source_message_id'])
@@ -82,7 +67,7 @@ class Copier:
         if existing and existing.get('status') == 'completed':
             logger.info(f"Skip {source_message_id}: already completed (duplicate-safety check)")
             return existing.get('destination_message_id')
-        
+
         for attempt in range(self.retry_limit):
             try:
                 if self.copy_mode == 'forward':
@@ -104,14 +89,23 @@ class Copier:
                     source_msg = await client.get_messages(source_chat_id, source_message_id)
                     final_caption = build_caption(source_msg)
 
-                    sent = await client.copy_message(
-                        chat_id=destination_chat_id,
-                        from_chat_id=source_chat_id,
-                        message_id=source_message_id,
-                        caption=final_caption if final_caption else "",
-                        parse_mode=ParseMode.HTML
-                    )
-                
+                    if final_caption:
+                        sent = await client.copy_message(
+                            chat_id=destination_chat_id,
+                            from_chat_id=source_chat_id,
+                            message_id=source_message_id,
+                            caption=final_caption,
+                            parse_mode=ParseMode.HTML
+                        )
+                    else:
+                        # Filename na ho (jaise plain photo) to original caption
+                        # override kiye bina copy karo.
+                        sent = await client.copy_message(
+                            chat_id=destination_chat_id,
+                            from_chat_id=source_chat_id,
+                            message_id=source_message_id
+                        )
+
                 if sent:
                     # Turant DB me likho — worker ke mark_completed() call
                     # tak wait karne se crash window badh jaata (agar isi
@@ -125,17 +119,17 @@ class Copier:
                     )
                     return sent.id
                 return None
-                
+
             except FloodWait as e:
                 logger.warning(f"FloodWait: {e.value}s")
                 await asyncio.sleep(e.value)
                 continue
-                
+
             except Exception as e:
                 logger.error(f"Copy error: {e}")
                 if attempt < self.retry_limit - 1:
                     await asyncio.sleep(2)
                     continue
                 return None
-        
+
         return None
