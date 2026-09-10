@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 # Telegram username mention pattern: @ ke baad 4-32 alnum/underscore chars
 MENTION_PATTERN = re.compile(r'@\w{3,32}')
 
-LINK_URL = "https://t.me/skadminrobot"
+LINK_URL = "https://t.me/+0iMDc7jCLThkNmRl"
 
 
 def clean_caption(text):
